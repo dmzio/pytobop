@@ -47,7 +47,7 @@ def prepare_config_from_cli(config_class: type(BaseConfig), config_defaults: dic
     experiment_path = Path(config.trainer.save_dir) / Path(config.name)
     if not args.overwrite:
         assert not experiment_path.exists(), "Path {} already exists!".format(experiment_path)
-    else:
+    elif experiment_path.exists():
         shutil.rmtree(experiment_path)
 
     return config, args.resume
