@@ -17,7 +17,7 @@ class BaseDataLoaderConfig(object):
     validation_split = attr.ib(default=None)
     validation_shuffle = attr.ib(default=False)
 
-    data_dir = attr.ib(default="data")
+    data_dir = attr.ib(default="../data")
 
 
 class BaseDataLoader(DataLoader):
