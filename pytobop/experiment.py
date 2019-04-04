@@ -39,8 +39,7 @@ def prepare_config_from_cli(config_class: type(BaseConfig), config_defaults: dic
         config = torch.load(args.resume)['config']
     elif args.config:
         config_path = Path(args.config)
-        config_dict = json.loads(config_path.read_text())
-        config = structure(config_dict, config_class)
+        config = read_config_from_json(config_class, config_path)
     else:
         config = config_class(**config_defaults) if config_defaults is not None else config_class()
 
@@ -51,5 +50,18 @@ def prepare_config_from_cli(config_class: type(BaseConfig), config_defaults: dic
         shutil.rmtree(experiment_path)
 
     return config, args.resume
+
+
+def read_config_from_json(config_class: type(BaseConfig), config_path: Path):
+    """
+    Reads provided JSON file and returns Config of given class
+    :param config_class: class of the Config for experiment
+    :param config_path: Path to JSON file of config
+    :param cli_description: Description string shown in the help message of CLI script
+    :return: instance of Config and 'resume' bool flag
+    """
+    config_dict = json.loads(config_path.read_text())
+    config = structure(config_dict, config_class)
+    return config
 
 
