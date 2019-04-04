@@ -57,8 +57,7 @@ def read_config_from_json(config_class: type(BaseConfig), config_path: Path):
     Reads provided JSON file and returns Config of given class
     :param config_class: class of the Config for experiment
     :param config_path: Path to JSON file of config
-    :param cli_description: Description string shown in the help message of CLI script
-    :return: instance of Config and 'resume' bool flag
+    :return: instance of Config
     """
     config_dict = json.loads(config_path.read_text())
     config = structure(config_dict, config_class)
