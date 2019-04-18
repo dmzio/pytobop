@@ -1,9 +1,39 @@
 import numpy as np
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.dataloader import default_collate
 from torch.utils.data.sampler import SubsetRandomSampler
 import attr
 import math
+import psutil
+
+
+class CachedDataset(Dataset):
+    def __init__(self, reserved_ram: int = 3):
+        """
+        Base class which has RAM caching of datapoints
+        :param reserved_ram: number of GB to keep free in memory during cache population. If `None` - disables the cache
+        """
+        self.reserved_ram = reserved_ram
+        self._ram_cache = {}
+
+    def __len__(self):
+        raise NotImplementedError
+
+    def __getitem__(self, idx):
+        if self.reserved_ram is not None and (idx in self._ram_cache):
+            return self._ram_cache[idx]
+
+        rv = self._get_item_uncached(idx)
+
+        if self.reserved_ram is not None:
+            free_ram_avail = (psutil.virtual_memory().free + psutil.virtual_memory().cached) // (1024 ** 3)
+            if free_ram_avail > self.reserved_ram:
+                self._ram_cache[idx] = rv
+        return rv
+
+    def _get_item_uncached(self, idx):
+        raise NotImplementedError
+
 
 @attr.s
 class BaseDataLoaderConfig(object):
@@ -82,4 +112,3 @@ class BaseDataLoader(DataLoader):
             return None
         else:
             return DataLoader(sampler=self.valid_sampler, **self.init_kwargs)
-    
