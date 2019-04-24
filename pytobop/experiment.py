@@ -41,7 +41,7 @@ def prepare_config_from_cli(config_class: type(BaseConfig), config_defaults: dic
         config_path = Path(args.config)
         config = read_config_from_json(config_class, config_path)
     else:
-        config = config_class(**config_defaults) if config_defaults is not None else config_class()
+        config = structure(config_defaults, config_class) if config_defaults is not None else config_class()
 
     experiment_path = Path(config.trainer.save_dir) / Path(config.name)
     if not args.overwrite:
