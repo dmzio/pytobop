@@ -2,12 +2,19 @@ import os
 import math
 import json
 import logging
+import typing
+from pathlib import Path
 import torch
 import torch.optim as optim
 from .util import ensure_dir
 import attr
+from ignite.metrics.metric import Metric
+from ignite.engine import Engine, Events
+from ignite.contrib.handlers.tqdm_logger import ProgressBar
 
 from .data_loader import BaseDataLoaderConfig
+from .model import BaseModel
+
 
 @attr.s
 class BaseOptimizerConfig(object):
@@ -61,7 +68,8 @@ class BaseTrainer:
     """
     Base class for all trainers
     """
-    def __init__(self, model, loss, metrics, resume, config: BaseConfig, train_logger=None):
+    def __init__(self, model: BaseModel, loss: typing.Callable, metrics: typing.Dict[str, Metric],
+                 config: BaseConfig, resume: typing.Optional[Path] = None, train_logger=None):
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
         self.model = model
@@ -71,13 +79,14 @@ class BaseTrainer:
         self.epochs = config.trainer.epochs
         self.save_freq = config.trainer.save_freq
         self.verbosity = config.trainer.verbosity
-        self.with_cuda = config.cuda and torch.cuda.is_available()
-        if config.cuda and not torch.cuda.is_available():
-            self.logger.warning('Warning: There\'s no CUDA support on this machine, '
+        self.gpu = None
+        if config.gpu:
+            if not torch.cuda.is_available():
+                self.logger.warning('Warning: There\'s no CUDA support on this machine, '
                                 'training is performed on CPU.')
-        else:
-            self.gpu = torch.device('cuda:' + str(config.gpu))
-            self.model = self.model.to(self.gpu)
+            else:
+                self.gpu = torch.device('cuda:' + str(config.gpu))
+                self.model = self.model.to(self.gpu)
 
         self.train_logger = train_logger
         self.optimizer = getattr(optim, config.optimizer.opt_type)(model.parameters(),
@@ -100,6 +109,37 @@ class BaseTrainer:
         if resume:
             self._resume_checkpoint(resume)
 
+    def _train_update_func(self, engine, batch_values):
+        raise NotImplementedError
+
+    def _eval_inference_func(self, engine, batch_values):
+        raise NotImplementedError
+
+    def _prepare_evaluator(self):
+        if self.gpu:
+            self.model.to(self.gpu)
+
+        engine = Engine(self._eval_inference_func)
+        @engine.on(Events.STARTED)
+        def log_loss_start(engine):
+            engine.state.total_loss = 0
+
+        @engine.on(Events.ITERATION_COMPLETED)
+        def log_loss(engine):
+            engine.state.total_loss += engine.state.output['loss']
+
+        @engine.on(Events.COMPLETED)
+        def log_results(engine):
+            self.logger.info(f"eval results... {engine.state.metrics}")
+
+        for name, metric in self.metrics.items():
+            metric.attach(engine, name)
+        return engine
+
+    def run_validate(self, train_engine, evaluate_engine):
+        self.model.eval()
+        raise NotImplementedError
+
     def train(self):
         """
         Full training logic
@@ -107,35 +147,62 @@ class BaseTrainer:
         if self.train_logger is not None:
             self.train_logger.watch(self.model)
 
-        for epoch in range(self.start_epoch, self.epochs + 1):
-            result = self._train_epoch(epoch)
-            log = {'epoch': epoch}
-            for key, value in result.items():
-                if key == 'metrics':
-                    for i, metric in enumerate(self.metrics):
-                        log[metric.__name__] = result['metrics'][i]
-                elif key == 'val_metrics':
-                    for i, metric in enumerate(self.metrics):
-                        log['val_' + metric.__name__] = result['val_metrics'][i]
-                else:
-                    log[key] = value
+        engine = Engine(self._train_update_func)
+
+        @engine.on(Events.STARTED)
+        def log_training_loss(engine):
+            engine.state.total_loss = 0
+
+        @engine.on(Events.ITERATION_COMPLETED)
+        def log_training_loss(engine):
+            engine.state.total_loss += engine.state.output['loss']
+
+        for name, metric in self.metrics.items():
+            metric.attach(engine, name)
+
+        pbar = ProgressBar()
+        pbar.attach(engine)
+
+        if self.valid:  # TODO proper implementation: currently handled only in subclass
+            evaluator = self._prepare_evaluator()
+            engine.add_event_handler(Events.EPOCH_COMPLETED, self.run_validate, evaluator)
+
+        @engine.on(Events.EPOCH_COMPLETED)
+        def mk_checkpoints(engine):  # TODO use checkpointing/scheduling from ignnite
+            log = {
+                'epoch': engine.state.epoch,
+                'loss': engine.state.total_loss,
+                'metrics': engine.state.metrics
+            }
+            if hasattr(engine.state, 'validation_result'):
+                log['val_loss'] = engine.state.validation_result.total_loss / len(engine.state.validation_result.dataloader)
+
+            self._prepare_checkpoint(log=log)
+            self._reschedule_lr(epoch=engine.state.epoch)
             if self.train_logger is not None:
                 self.train_logger.add_entry(log)
                 if self.verbosity >= 1:
                     for key, value in log.items():
                         self.logger.info('    {:15s}: {}'.format(str(key), value))
-            if (self.monitor_mode == 'min' and log[self.monitor] < self.monitor_best)\
-                    or (self.monitor_mode == 'max' and log[self.monitor] > self.monitor_best):
-                self.monitor_best = log[self.monitor]
-                self._save_checkpoint(epoch, log, save_best=True)
-            if epoch % self.save_freq == 0:
-                self._save_checkpoint(epoch, log)
-            if self.lr_scheduler and epoch % self.lr_scheduler_freq == 0:
-                self.lr_scheduler.step(epoch)
-                lr = self.lr_scheduler.get_lr()[0]
-                self.logger.info('New Learning Rate: {:.6f}'.format(lr))
 
-    def _train_epoch(self, epoch):
+        engine.run(self.data_loader, max_epochs=self.epochs)  # TODO return resume logic of range(self.start_epoch, self.epochs + 1):
+
+    def _reschedule_lr(self, epoch):
+        if self.lr_scheduler and epoch % self.lr_scheduler_freq == 0:
+            self.lr_scheduler.step(epoch)
+            lr = self.lr_scheduler.get_lr()[0]
+            self.logger.info('New Learning Rate: {:.6f}'.format(lr))
+
+    def _prepare_checkpoint(self, log: dict):
+        epoch = log['epoch']
+        if (self.monitor_mode == 'min' and log[self.monitor] < self.monitor_best) \
+                or (self.monitor_mode == 'max' and log[self.monitor] > self.monitor_best):
+            self.monitor_best = log[self.monitor]
+            self._save_checkpoint(epoch, log, save_best=True)
+        if epoch % self.save_freq == 0:
+            self._save_checkpoint(epoch, log)
+
+    def _train_epoch(self, epoch) -> dict:
         """
         Training logic for an epoch
 
@@ -186,7 +253,7 @@ class BaseTrainer:
         self.monitor_best = checkpoint['monitor_best']
         self.model.load_state_dict(checkpoint['state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
-        if self.with_cuda:
+        if self.gpu:
             for state in self.optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):

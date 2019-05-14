@@ -1,4 +1,7 @@
 cattrs
-torch>=0.4.1
+torch>=1.0.0
 numpy
 psutil
+pytorch-ignite>=0.2.0
+pytest
+tqdm>=4.31.1
