@@ -80,7 +80,7 @@ class BaseTrainer:
         self.save_freq = config.trainer.save_freq
         self.verbosity = config.trainer.verbosity
         self.gpu = None
-        if config.gpu:
+        if config.gpu is not None:
             if not torch.cuda.is_available():
                 self.logger.warning('Warning: There\'s no CUDA support on this machine, '
                                 'training is performed on CPU.')
@@ -149,7 +149,7 @@ class BaseTrainer:
 
         engine = Engine(self._train_update_func)
 
-        @engine.on(Events.STARTED)
+        @engine.on(Events.EPOCH_STARTED)
         def log_training_loss(engine):
             engine.state.total_loss = 0
 
@@ -171,7 +171,7 @@ class BaseTrainer:
         def mk_checkpoints(engine):  # TODO use checkpointing/scheduling from ignnite
             log = {
                 'epoch': engine.state.epoch,
-                'loss': engine.state.total_loss,
+                'loss': engine.state.total_loss / len(engine.state.dataloader),
                 'metrics': engine.state.metrics
             }
             if hasattr(engine.state, 'validation_result'):
