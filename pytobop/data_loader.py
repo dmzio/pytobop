@@ -1,10 +1,10 @@
+import attr
+import math
 import numpy as np
+import psutil
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.dataloader import default_collate
 from torch.utils.data.sampler import SubsetRandomSampler
-import attr
-import math
-import psutil
 
 
 class CachedDataset(Dataset):
@@ -51,10 +51,13 @@ class BaseDataLoaderConfig(object):
 
 
 class BaseDataLoader(DataLoader):
-    """
-    Base class for all data loaders
-    """
-    def __init__(self, dataset, config: BaseDataLoaderConfig, collate_fn=default_collate):
+    def __init__(self, dataset: Dataset, config: BaseDataLoaderConfig, collate_fn=default_collate):
+        """
+        Base class for all data loaders
+        :param dataset: Dataset to iterate over
+        :param config:
+        :param collate_fn:
+        """
         self.dataset = dataset
         self.config = config
         self.collate_fn = collate_fn
